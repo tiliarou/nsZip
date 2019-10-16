@@ -1,18 +1,19 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using LibHac;
-using LibHac.IO;
+using LibHac.Fs;
 
 namespace nsZip.LibHacExtensions
 {
 	public static class RecreateDelta
 	{
-		public static long Recreate(IStorage fragmentMeta, FileStream writer, string newBaseFolderPath)
+		public static long Recreate(IStorage fragmentMeta, FileStream writer, IFileSystem newBaseFolderFs)
 		{
 			var Segments = new List<DeltaFragmentSegment>();
-			if (fragmentMeta.Length < 0x40)
+			if (fragmentMeta.GetSize() < 0x40)
 			{
 				throw new InvalidDataException("Delta file is too small.");
 			}
@@ -28,35 +29,54 @@ namespace nsZip.LibHacExtensions
 				var linkedNcafilename =
 					Encoding.ASCII.GetString(reader.ReadBytes(DeltaTools.LCA3Macic.Length + 1, linkedNcaFilenameSize,
 						true));
-				var newLinkedFile = File.Open($"{newBaseFolderPath}/{linkedNcafilename}", FileMode.Open);
+				
+				var newLinkedFile = newBaseFolderFs.OpenFile(linkedNcafilename, OpenMode.Read).AsStream();
 				newLinkedFile.CopyStream(writer, newLinkedFile.Length);
 				return reader.Position;
 			}
 
 			var Header = new DeltaFragmentHeader(new StorageFile(fragmentMeta, OpenMode.Read));
-			if (Header.Magic != DeltaTools.Tdv0Magic)
-			{
-				throw new InvalidDataException("TDV0 magic value is missing.");
-			}
 
 			reader.Position = 0;
-			var headerData = reader.ReadBytes(0, (int) Header.FragmentHeaderSize, true);
-			headerData[0] = 0x4E; //N (TDV0 to NDV0)
-			writer.Write(headerData, 0, (int) Header.FragmentHeaderSize);
+			if (Header.Magic == DeltaTools.Tdv0Magic)
+			{
+				var headerData = reader.ReadBytes(0, (int) Header.FragmentHeaderSize, true);
+				headerData[0] = 0x4E; //N (TDV0 to NDV0)
+				writer.Write(headerData, 0, (int) Header.FragmentHeaderSize);
+			}
+			else if (Header.Magic == DeltaTools.Cdv0Magic)
+			{
+				reader.Position = 4;
+			}
+			else
+			{
+				throw new InvalidDataException("TDV0/CDV0 magic value is missing.");
+			}
+
+			var pos = reader.Position;
 			var baseNcaFilenameSize = reader.ReadUInt8();
-			var filename =
-				Encoding.ASCII.GetString(reader.ReadBytes(Header.FragmentHeaderSize + 1, baseNcaFilenameSize, true));
-			var newBaseFile = File.Open($"{newBaseFolderPath}/{filename}", FileMode.Open);
+			var filenameOffset =
+				Encoding.ASCII.GetString(reader.ReadBytes(pos + 1, baseNcaFilenameSize, true)).Split(':');
+
+			var newBaseFile = newBaseFolderFs.OpenFile(filenameOffset[0], OpenMode.Read).AsStream();
 
 			long offset = 0;
+			var endOffset = Header.NewSize;
+			if (filenameOffset.Length > 2)
+			{
+				offset = long.Parse(filenameOffset[1], NumberStyles.HexNumber);
+				endOffset = long.Parse(filenameOffset[2], NumberStyles.HexNumber);
+			}
+
 			const int maxBS = 10485760; //10 MB
 			int bs;
 			var FragmentBlock = new byte[maxBS];
 
-			while (offset < Header.NewSize)
+			while (offset < endOffset)
 			{
+				Console.WriteLine($"ReadSegmentHeader on {offset}");
 				ReadSegmentHeader(reader, writer, out var size, out var seek);
-
+				Console.WriteLine($"size: {size}, seek: {seek}, readerPos: {reader.Position}, writerPos: {writer.Position}");
 				if (seek > 0)
 				{
 					var segment = new DeltaFragmentSegment
@@ -97,13 +117,14 @@ namespace nsZip.LibHacExtensions
 			return reader.Position;
 		}
 
-		private static void ReadSegmentHeader(FileReader reader, FileStream writer, out int size, out int seek)
+		private static void ReadSegmentHeader(FileReader reader, FileStream writer, out long size, out long seek)
 		{
 			var pos = reader.Position;
 			var type = reader.ReadUInt8();
 
-			var seekBytes = (type & 3) + 1;
-			var sizeBytes = ((type >> 3) & 3) + 1;
+			Console.WriteLine($"type: {type}");
+			var seekBytes = (type & 7) + 1;
+			var sizeBytes = (type >> 3) + 1;
 
 			size = DeltaTools.ReadInt(reader, sizeBytes);
 			seek = DeltaTools.ReadInt(reader, seekBytes);

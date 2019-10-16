@@ -1,31 +1,62 @@
 ﻿using System.IO;
+using System.Linq;
 using System.Text;
-using System.Windows.Forms;
 using LibHac;
-using LibHac.IO;
+using LibHac.Fs;
+using LibHac.NcaLegacy;
 
 namespace nsZip.LibHacControl
 {
 	internal static class ProcessNca
 	{
-		public static void Process(string inFile, string outFile, Keyset keyset, RichTextBox DebugOutput)
+
+		public static void Extract(Stream inFileStream, string outDir, bool verify, Keyset keyset, Output Out, bool isDecryptedNca = false)
 		{
-			using (var file = new StreamStorage(new FileStream(inFile, FileMode.Open, FileAccess.Read), false))
+			using (var file = new StreamStorage(inFileStream, false))
 			{
-				var nca = new Nca(keyset, file, false);
-				nca.ValidateMasterHashes();
-				//nca.ParseNpdm();
+				var nca = new Nca(keyset, file, false, isDecryptedNca);
+				Out.Log(nca.Print());
+				if (verify)
+				{
+					Out.Log($"ValidateMasterHashes...\r\n");
+					nca.ValidateMasterHashes();
+				}
 
 				for (var i = 0; i < 3; ++i)
 				{
 					if (nca.Sections[i] != null)
 					{
-						nca.VerifySection(i);
+						if (verify)
+						{
+							nca.VerifySection(i, Out);
+						}
+						nca.ExtractSection(i, Path.Combine(outDir, i.ToString()), IntegrityCheckLevel.None, Out);
 					}
 				}
+			}
+		}
 
-				nca.OpenDecryptedNca().WriteAllBytes(outFile);
-				DebugOutput.AppendText(nca.Print());
+		public static void Process(IFile inFile, IFile outFile, bool verifyBeforeDecrypting, Keyset keyset, Output Out)
+		{
+			using (var file = new StreamStorage(inFile.AsStream(), false))
+			{
+				var nca = new Nca(keyset, file, false);
+				Out.Log(nca.Print());
+				if (verifyBeforeDecrypting)
+				{
+					Out.Log($"ValidateMasterHashes...\r\n");
+					nca.ValidateMasterHashes();
+					//nca.ParseNpdm();
+					for (var i = 0; i < 3; ++i)
+					{
+						if (nca.Sections[i] != null)
+						{
+							nca.VerifySection(i, Out);
+						}
+					}
+				}
+				Out.Log($"Decripting...\r\n");
+				nca.OpenDecryptedNca().CopyToStream(outFile.AsStream());
 			}
 		}
 

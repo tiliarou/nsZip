@@ -1,8 +1,8 @@
 ﻿using System.IO;
 using System.Linq;
-using System.Windows.Forms;
 using LibHac;
-using LibHac.IO;
+using LibHac.Fs;
+using LibHac.NcaLegacy;
 using nsZip.LibHacExtensions;
 
 namespace nsZip.LibHacControl
@@ -11,12 +11,12 @@ namespace nsZip.LibHacControl
 	{
 		private const string FragmentFileName = "fragment";
 
-		public static void Process(string folderPath, string newBaseFolderPath, Keyset keyset, RichTextBox DebugOutput)
+		public static void Process(string folderPath, IFileSystem newBaseFolderFs, Keyset keyset, Output Out)
 		{
 			var dirDecrypted = new DirectoryInfo(folderPath);
 			foreach (var inFile in dirDecrypted.GetFiles("*.tca"))
 			{
-				DebugOutput.AppendText($"{inFile}\r\n");
+				Out.Log($"{inFile}\r\n");
 				var ncaStorage = new StreamStorage(new FileStream(inFile.FullName, FileMode.Open, FileAccess.Read),
 					false);
 				var DecryptedHeader = new byte[0xC00];
@@ -35,8 +35,8 @@ namespace nsZip.LibHacControl
 
 					if (fragmentTrimmed)
 					{
-						DebugOutput.AppendText(
-							"Warning: Multiple fragments in NCA found! Skip trimming this fragment.\r\n");
+						Out.Warn(
+							"Multiple fragments in NCA found! Skip trimming this fragment.\r\n");
 						continue;
 					}
 
@@ -55,12 +55,12 @@ namespace nsZip.LibHacControl
 						                   fragmentFile.Offset;
 						IStorage ncaStorageBeforeFragment = ncaStorage.Slice(0, offsetBefore, false);
 						IStorage fragmentStorageOverflow = ncaStorage.Slice(offsetBefore,
-							ncaStorage.Length - offsetBefore, false);
+							ncaStorage.GetSize() - offsetBefore, false);
 						ncaStorageBeforeFragment.CopyToStream(writer);
-						var TDV0len = RecreateDelta.Recreate(fragmentStorageOverflow, writer, newBaseFolderPath);
+						var TDV0len = RecreateDelta.Recreate(fragmentStorageOverflow, writer, newBaseFolderFs);
 						var offsetAfter = offsetBefore + TDV0len;
 						IStorage fragmentStorageAfter = ncaStorage.Slice(offsetAfter,
-							ncaStorage.Length - offsetAfter, false);
+							ncaStorage.GetSize() - offsetAfter, false);
 						fragmentStorageAfter.CopyToStream(writer);
 						writer.Position = 0x200;
 						writer.WriteByte(0x4E);
@@ -70,6 +70,7 @@ namespace nsZip.LibHacControl
 				}
 
 				ncaStorage.Dispose();
+				File.Delete(inFile.FullName);
 			}
 		}
 	}
